@@ -1,0 +1,163 @@
+#!/usr/bin/env python
+import sys
+import string
+import re
+import os
+
+# Your task is to implement this stage in Perl or Python or Ruby; i.e., to write
+# a bash-like macroprocessor "Expand" that
+# * reads lines from the standard input,
+# * performs the variable expansions described above, and
+# * writes the expanded command to the standard output.
+
+def listConvert(listExp):
+	strList = ""
+	for item in listExp:
+		strList = strList + item + " " 
+	return strList[:-1]
+
+# Things that can be escaped: $, {, }, \, whitespace
+def slashChecker(strCheck):
+	slashFull = re.compile(r'(\\*)(\$.*)')
+	patternEven = re.compile(r'((?:\\\\)*)(\$.*)')
+	currMatch = re.findall(slashFull, strCheck)
+	for match in currMatch:
+		allSlash = len(match[0])
+		evenSlash = len(re.search(patternEven, strCheck).group(1)) # MIGHT NOT WORK
+		if (allSlash != evenSlash):
+			continue
+		else:
+			return match[1]
+	return None
+
+def processStr(curStr, argv, argc):
+	matchDollar = slashChecker(curStr)
+	if matchDollar !=None:
+		matchBracGeneric = re.search(r'^\${([a-zA-Z][a-zA-Z0-9_]*)([-|=])(.*})', matchDollar)
+		matchObject = re.search(r'^(\$[a-zA-Z][a-zA-Z0-9_]*)', matchDollar)
+		matchBracVar = re.search(r'^(\${[a-zA-Z][a-zA-Z0-9_]*})', matchDollar)
+		matchDec = re.search(r'^(\$[0-9]{1})', matchDollar)
+		matchBracN = re.search(r'^(\${[0-9]+})', matchDollar)
+		matchStar = re.search(r'^(\$\*)', matchDollar)
+
+		# To match $NAME
+		if matchObject:
+			objMatch = matchObject.group(1)
+			newMatch = re.search(r'[a-zA-Z][a-zA-Z0-9_]*', objMatch).group(0)
+			patternVar = str("\$" + newMatch)
+			repValue = os.getenv(newMatch)
+			if not repValue:
+				repValue = ''
+			curStr = re.sub(patternVar, repValue, curStr, 1)
+
+		# To match ${NAME}
+		elif matchBracVar:
+			objMatch = matchBracVar.group(1)
+			newMatch = re.search(r'[a-zA-Z][a-zA-Z0-9_]*', objMatch).group(0)
+			patternVar = str("\${" + newMatch + "}")
+			repValue = os.getenv(newMatch)
+			if not repValue:
+				repValue = ''
+			curStr = re.sub(patternVar, repValue, curStr, 1)
+
+		# To match for $0 ... $9
+		elif matchDec:
+			objMatch = matchDec.group(1)
+			newMatch = re.search(r'[0-9]{1}', objMatch).group(0)
+			patternVar = "\$" + newMatch
+			if (int(newMatch) < argc):
+				curStr = re.sub(patternVar, argv[int(newMatch)], curStr,1)
+			else:
+				curStr = re.sub(patternVar, '', curStr, 1)
+
+		# ${N}
+		elif matchBracN:
+			objMatch = matchBracN.group(1)
+			newMatch = re.search(r'[0-9]+', objMatch).group(0)
+			patternVar = str("\$\{" + newMatch + "\}")
+			if (int(newMatch) < argc):
+				curStr = re.sub(patternVar, argv[int(newMatch)], curStr, 1)
+			else:
+				curStr = re.sub(patternVar, '', curStr, 1)
+
+		# $*
+		elif matchStar:
+			objMatch = matchStar.group(1)
+			listExp = []
+			for i in range(1, argc):
+				item = argv[i]
+				listExp.append(processStr(item, argv, argc))
+			curStr = re.sub(r'\$\*', listConvert(listExp) , curStr, 1)
+
+		# To match ${NAME-WORD} or To match ${NAME=WORD}
+		elif matchBracGeneric:
+			name = matchBracGeneric.group(1)
+			leftBrac = 0
+			rightBrac = 1 # Start at 1 to account for right bracket already read
+			wHalf = matchBracGeneric.group(3)
+			word = ""
+			endBrackFound = False
+			for index in range(0, len(wHalf)): #aka post [-|=] and on
+				if wHalf[index] == '\\':
+					word +=wHalf[index]
+					if (index + 1< len(wHalf) and (wHalf[index +1] == '\\' or
+						wHalf[index +1] == '$' or wHalf[index +1] == '}' or wHalf[index +1] == '{')):
+						index+=1
+						word +=wHalf[index]
+				elif wHalf[index] == '{':
+					word +=wHalf[index]
+					rightBrac +=1
+				elif wHalf[index] == '}':
+					leftBrac+=1
+					if (rightBrac == leftBrac):
+						endBrackFound = True
+						break
+					word +=wHalf[index]
+				else:
+					word +=wHalf[index]
+
+			repValue = os.getenv(name)
+			patternVar = "${" + name + matchBracGeneric.group(2) + word + "}"
+			patternVar = re.sub('\$', '\$', patternVar) 
+			# print patternVar
+			if not endBrackFound:
+				return None	
+			elif matchBracGeneric.group(2) == "-":
+				if not(repValue):
+					repValue = processStr(word, argv, argc)	
+				curStr = re.sub(patternVar, repValue, curStr, 1) # only sub first occurence
+			elif matchBracGeneric.group(2) == "=":
+				if not(repValue):			
+					repValue = processStr(word, argv, argc)
+					os.environ[name]=repValue
+				curStr = re.sub(patternVar, repValue, curStr, 1) 
+			else: 
+				return None		
+		else:
+			return None	
+
+		# return
+		curStr = processStr(curStr, argv, argc)
+		return curStr	
+	else:
+		return curStr
+
+def main(argv, argc):
+	i = 1
+	while True:
+		try:
+		    curStr = raw_input("({})$ ".format(i))
+		    result = processStr(curStr, argv, argc)
+		    if result == None:
+		    	sys.stderr.write('Invalid Expansion\n')
+		    	i = i-1
+		    else:
+		    	print ">> "+ result
+		except EOFError:
+			print ""
+			break;
+		i+=1
+
+if __name__ == "__main__":
+    main(sys.argv, len(sys.argv))
+
